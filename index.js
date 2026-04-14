@@ -25,11 +25,9 @@ async function getDateFromPage(url) {
         });
         const $ = cheerio.load(response.data);
         
-        // Cari element dengan class yang mengandung tanggal
         const dateText = $('p.text-gray-400.mt-1.text-sm.whitespace-nowrap').text().trim();
         
         if (dateText) {
-            // Extract tanggal (format: 2026-04-14 09:45:40)
             const dateMatch = dateText.match(/(\d{4}-\d{2}-\d{2})/);
             return dateMatch ? dateMatch[1] : null;
         }
@@ -78,25 +76,19 @@ async function getFileSize(mp3Url) {
 
 // Fungsi utama untuk process link
 async function processLyricsLink(url) {
-    // Extract ID dari URL
     const id = extractId(url);
     if (!id) {
         throw new Error('Invalid URL format. Please use: https://lyricsintosong.com/play/[id]');
     }
 
-    // Get tanggal dari halaman
     const date = await getDateFromPage(url);
     if (!date) {
         throw new Error('Could not extract date from page. The page might be invalid or unavailable.');
     }
 
-    // Construct MP3 URL
     const mp3Url = `https://cdn.lyricsintosong.com/${date}/${id}.mp3`;
-    
-    // Verify MP3 exists
     const exists = await verifyMP3Exists(mp3Url);
     
-    // Get file size if exists
     let fileSize = 'Unknown';
     if (exists) {
         fileSize = await getFileSize(mp3Url);
@@ -105,11 +97,8 @@ async function processLyricsLink(url) {
     return { mp3Url, id, date, exists, fileSize };
 }
 
-client.on('ready', async () => {
-    console.log(`✅ Bot logged in as ${client.user.tag}`);
-    console.log(`🚀 Ready to get MP3 links from lyricsintosong.com`);
-    
-    // Register slash commands
+// Register slash commands
+async function registerCommands() {
     const commands = [
         new SlashCommandBuilder()
             .setName('lsong')
@@ -131,17 +120,28 @@ client.on('ready', async () => {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
     try {
-        console.log('🔄 Registering slash commands...');
-        
+        console.log('🔄 Started refreshing application (/) commands.');
+
+        // Register commands globally
         await rest.put(
-            Routes.applicationCommands(client.user.id),
+            Routes.applicationCommands(process.env.CLIENT_ID),
             { body: commands }
         );
-        
-        console.log('✅ Slash commands registered successfully!');
+
+        console.log('✅ Successfully reloaded application (/) commands globally!');
     } catch (error) {
         console.error('❌ Error registering commands:', error);
     }
+}
+
+client.on('ready', async () => {
+    console.log(`✅ Bot logged in as ${client.user.tag}`);
+    console.log(`🤖 Bot ID: ${client.user.id}`);
+    console.log(`📊 Servers: ${client.guilds.cache.size}`);
+    console.log(`🚀 Ready to get MP3 links from lyricsintosong.com`);
+    
+    // Register commands
+    await registerCommands();
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -155,7 +155,6 @@ client.on('interactionCreate', async (interaction) => {
 
         const url = interaction.options.getString('url');
 
-        // Validate URL format
         const urlRegex = /^https:\/\/lyricsintosong\.com\/play\/[a-f0-9-]+$/;
         if (!urlRegex.test(url)) {
             const errorEmbed = new EmbedBuilder()
@@ -172,10 +171,8 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         try {
-            // Process link
             const { mp3Url, id, date, exists, fileSize } = await processLyricsLink(url);
             
-            // Create embed message
             const embed = new EmbedBuilder()
                 .setColor(exists ? '#00ff00' : '#ffaa00')
                 .setTitle('🎵 MP3 Link Generated!')
@@ -276,9 +273,15 @@ process.on('unhandledRejection', error => {
 
 // Login to Discord
 const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
 
 if (!TOKEN) {
     console.error('❌ DISCORD_TOKEN not found in environment variables!');
+    process.exit(1);
+}
+
+if (!CLIENT_ID) {
+    console.error('❌ CLIENT_ID not found in environment variables!');
     process.exit(1);
 }
 
