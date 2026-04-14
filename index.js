@@ -1,8 +1,6 @@
-const { Client, GatewayIntentBits, AttachmentBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const fs = require('fs');
-const path = require('path');
 
 const client = new Client({
     intents: [
@@ -23,7 +21,11 @@ function extractId(url) {
 // Fungsi untuk scrape tanggal dari halaman
 async function getDateFromPage(url) {
     try {
-        const response = await axios.get(url);
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
         const $ = cheerio.load(response.data);
         
         // Cari element dengan class yang mengandung tanggal
@@ -42,24 +44,18 @@ async function getDateFromPage(url) {
     }
 }
 
-// Fungsi untuk download MP3
-async function downloadMP3(mp3Url, outputPath) {
+// Fungsi untuk verify apakah MP3 ada
+async function verifyMP3Exists(mp3Url) {
     try {
-        const response = await axios({
-            method: 'GET',
-            url: mp3Url,
-            responseType: 'stream'
+        const response = await axios.head(mp3Url, {
+            timeout: 10000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
         });
-
-        const writer = fs.createWriteStream(outputPath);
-        response.data.pipe(writer);
-
-        return new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
+        return response.status === 200;
     } catch (error) {
-        throw new Error(`Error downloading MP3: ${error.message}`);
+        return false;
     }
 }
 
@@ -80,12 +76,15 @@ async function processLyricsLink(url) {
     // Construct MP3 URL
     const mp3Url = `https://cdn.lyricsintosong.com/${date}/${id}.mp3`;
     
-    return { mp3Url, id, date };
+    // Verify MP3 exists
+    const exists = await verifyMP3Exists(mp3Url);
+    
+    return { mp3Url, id, date, exists };
 }
 
 client.on('ready', () => {
     console.log(`✅ Bot logged in as ${client.user.tag}`);
-    console.log(`🚀 Ready to download MP3 from lyricsintosong.com`);
+    console.log(`🚀 Ready to get MP3 links from lyricsintosong.com`);
 });
 
 client.on('messageCreate', async (message) => {
@@ -98,41 +97,29 @@ client.on('messageCreate', async (message) => {
 
     if (match) {
         const url = match[0];
-        const processingMsg = await message.reply('🔄 Processing your link...');
+        const processingMsg = await message.reply('🔄 Getting MP3 link...');
 
         try {
             // Process link
-            const { mp3Url, id, date } = await processLyricsLink(url);
+            const { mp3Url, id, date, exists } = await processLyricsLink(url);
             
-            await processingMsg.edit(`✅ Found MP3!\n📅 Date: ${date}\n⬇️ Downloading...`);
+            // Create embed message
+            const embed = new EmbedBuilder()
+                .setColor(exists ? '#00ff00' : '#ffaa00')
+                .setTitle('🎵 MP3 Link Ready!')
+                .addFields(
+                    { name: '📅 Date', value: date, inline: true },
+                    { name: '🆔 ID', value: id, inline: true },
+                    { name: '✅ Status', value: exists ? 'Verified' : 'Not Verified', inline: true },
+                    { name: '🔗 Download Link', value: `[Click here to download](${mp3Url})` }
+                )
+                .setFooter({ text: 'Click the link above to download the MP3 file' })
+                .setTimestamp();
 
-            // Download MP3
-            const fileName = `${id}.mp3`;
-            const filePath = path.join(__dirname, fileName);
-
-            await downloadMP3(mp3Url, filePath);
-
-            // Check file size
-            const stats = fs.statSync(filePath);
-            const fileSizeMB = stats.size / (1024 * 1024);
-
-            // Discord limit is 25MB for non-nitro
-            if (fileSizeMB > 25) {
-                await processingMsg.edit(`❌ File too large (${fileSizeMB.toFixed(2)}MB). Discord limit is 25MB.\n🔗 Direct link: ${mp3Url}`);
-                fs.unlinkSync(filePath);
-                return;
-            }
-
-            // Send MP3 file
-            const attachment = new AttachmentBuilder(filePath);
-            await message.reply({
-                content: `🎵 Here's your MP3!\n📅 Date: ${date}\n🔗 Direct link: ${mp3Url}`,
-                files: [attachment]
+            await processingMsg.edit({
+                content: `**MP3 Link:**\n${mp3Url}`,
+                embeds: [embed]
             });
-
-            // Delete processing message and local file
-            await processingMsg.delete();
-            fs.unlinkSync(filePath);
 
         } catch (error) {
             console.error('Error:', error);
@@ -142,28 +129,45 @@ client.on('messageCreate', async (message) => {
 
     // Command help
     if (message.content === `${PREFIX}help`) {
-        message.reply({
-            content: `
-**🎵 Lyrics to Song Bot**
+        const helpEmbed = new EmbedBuilder()
+            .setColor('#0099ff')
+            .setTitle('🎵 Lyrics to Song Bot - Help')
+            .setDescription('Get MP3 download links from lyricsintosong.com')
+            .addFields(
+                {
+                    name: '📖 How to use',
+                    value: 'Just paste a link from lyricsintosong.com and I\'ll give you the MP3 download link!'
+                },
+                {
+                    name: '💡 Example',
+                    value: '```https://lyricsintosong.com/play/fd222b54-f99b-4c57-b5fe-e48540ffc2b7```'
+                },
+                {
+                    name: '🛠️ Commands',
+                    value: `\`${PREFIX}help\` - Show this message\n\`${PREFIX}ping\` - Check bot status`
+                }
+            )
+            .setFooter({ text: 'Made with ❤️' })
+            .setTimestamp();
 
-**How to use:**
-Just paste a link from lyricsintosong.com and I'll download the MP3 for you!
-
-**Example:**
-\`https://lyricsintosong.com/play/fd222b54-f99b-4c57-b5fe-e48540ffc2b7\`
-
-**Commands:**
-\`${PREFIX}help\` - Show this message
-\`${PREFIX}ping\` - Check bot status
-            `.trim()
-        });
+        message.reply({ embeds: [helpEmbed] });
     }
 
     // Command ping
     if (message.content === `${PREFIX}ping`) {
         const sent = await message.reply('🏓 Pinging...');
         const latency = sent.createdTimestamp - message.createdTimestamp;
-        sent.edit(`🏓 Pong! Latency: ${latency}ms | API Latency: ${Math.round(client.ws.ping)}ms`);
+        
+        const pingEmbed = new EmbedBuilder()
+            .setColor('#00ff00')
+            .setTitle('🏓 Pong!')
+            .addFields(
+                { name: '⚡ Bot Latency', value: `${latency}ms`, inline: true },
+                { name: '📡 API Latency', value: `${Math.round(client.ws.ping)}ms`, inline: true }
+            )
+            .setTimestamp();
+
+        sent.edit({ content: null, embeds: [pingEmbed] });
     }
 });
 
