@@ -1,7 +1,7 @@
 {
   "name": "lyrics-to-song-bot",
   "version": "1.0.0",
-  "description": "Discord bot to download MP3 from lyricsintosong.com",
+  "description": "Discord bot to get MP3 link from lyricsintosong.com",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
