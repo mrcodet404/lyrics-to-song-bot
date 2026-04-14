@@ -1,0 +1,17 @@
+{
+  "name": "lyrics-to-song-bot",
+  "version": "1.0.0",
+  "description": "Discord bot to download MP3 from lyricsintosong.com",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "axios": "^1.6.5",
+    "cheerio": "^1.0.0-rc.12"
+  }
+}
