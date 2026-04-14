@@ -1,16 +1,12 @@
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const axios = require('axios');
 const cheerio = require('cheerio');
 
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
     ]
 });
-
-const PREFIX = '!';
 
 // Fungsi untuk extract ID dari URL
 function extractId(url) {
@@ -24,7 +20,8 @@ async function getDateFromPage(url) {
         const response = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+            },
+            timeout: 15000
         });
         const $ = cheerio.load(response.data);
         
@@ -40,7 +37,7 @@ async function getDateFromPage(url) {
         return null;
     } catch (error) {
         console.error('Error scraping date:', error.message);
-        return null;
+        throw new Error('Failed to fetch page data. Please check if the URL is valid.');
     }
 }
 
@@ -59,18 +56,38 @@ async function verifyMP3Exists(mp3Url) {
     }
 }
 
+// Fungsi untuk get file size
+async function getFileSize(mp3Url) {
+    try {
+        const response = await axios.head(mp3Url, {
+            timeout: 10000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
+        const bytes = response.headers['content-length'];
+        if (bytes) {
+            const mb = (bytes / (1024 * 1024)).toFixed(2);
+            return `${mb} MB`;
+        }
+        return 'Unknown';
+    } catch (error) {
+        return 'Unknown';
+    }
+}
+
 // Fungsi utama untuk process link
 async function processLyricsLink(url) {
     // Extract ID dari URL
     const id = extractId(url);
     if (!id) {
-        throw new Error('Invalid URL format');
+        throw new Error('Invalid URL format. Please use: https://lyricsintosong.com/play/[id]');
     }
 
     // Get tanggal dari halaman
     const date = await getDateFromPage(url);
     if (!date) {
-        throw new Error('Could not extract date from page');
+        throw new Error('Could not extract date from page. The page might be invalid or unavailable.');
     }
 
     // Construct MP3 URL
@@ -79,95 +96,172 @@ async function processLyricsLink(url) {
     // Verify MP3 exists
     const exists = await verifyMP3Exists(mp3Url);
     
-    return { mp3Url, id, date, exists };
+    // Get file size if exists
+    let fileSize = 'Unknown';
+    if (exists) {
+        fileSize = await getFileSize(mp3Url);
+    }
+    
+    return { mp3Url, id, date, exists, fileSize };
 }
 
-client.on('ready', () => {
+client.on('ready', async () => {
     console.log(`✅ Bot logged in as ${client.user.tag}`);
     console.log(`🚀 Ready to get MP3 links from lyricsintosong.com`);
+    
+    // Register slash commands
+    const commands = [
+        new SlashCommandBuilder()
+            .setName('lsong')
+            .setDescription('Get MP3 download link from lyricsintosong.com')
+            .addStringOption(option =>
+                option
+                    .setName('url')
+                    .setDescription('The lyricsintosong.com URL')
+                    .setRequired(true)
+            ),
+        new SlashCommandBuilder()
+            .setName('help')
+            .setDescription('Show help information'),
+        new SlashCommandBuilder()
+            .setName('ping')
+            .setDescription('Check bot latency')
+    ].map(command => command.toJSON());
+
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+    try {
+        console.log('🔄 Registering slash commands...');
+        
+        await rest.put(
+            Routes.applicationCommands(client.user.id),
+            { body: commands }
+        );
+        
+        console.log('✅ Slash commands registered successfully!');
+    } catch (error) {
+        console.error('❌ Error registering commands:', error);
+    }
 });
 
-client.on('messageCreate', async (message) => {
-    // Ignore bot messages
-    if (message.author.bot) return;
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
 
-    // Check if message contains lyricsintosong.com link
-    const lyricsRegex = /https:\/\/lyricsintosong\.com\/play\/[a-f0-9-]+/;
-    const match = message.content.match(lyricsRegex);
+    const { commandName } = interaction;
 
-    if (match) {
-        const url = match[0];
-        const processingMsg = await message.reply('🔄 Getting MP3 link...');
+    // Command: /lsong
+    if (commandName === 'lsong') {
+        await interaction.deferReply();
+
+        const url = interaction.options.getString('url');
+
+        // Validate URL format
+        const urlRegex = /^https:\/\/lyricsintosong\.com\/play\/[a-f0-9-]+$/;
+        if (!urlRegex.test(url)) {
+            const errorEmbed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('❌ Invalid URL')
+                .setDescription('Please provide a valid lyricsintosong.com URL')
+                .addFields({
+                    name: '💡 Example',
+                    value: '```https://lyricsintosong.com/play/fd222b54-f99b-4c57-b5fe-e48540ffc2b7```'
+                })
+                .setTimestamp();
+
+            return interaction.editReply({ embeds: [errorEmbed] });
+        }
 
         try {
             // Process link
-            const { mp3Url, id, date, exists } = await processLyricsLink(url);
+            const { mp3Url, id, date, exists, fileSize } = await processLyricsLink(url);
             
             // Create embed message
             const embed = new EmbedBuilder()
                 .setColor(exists ? '#00ff00' : '#ffaa00')
-                .setTitle('🎵 MP3 Link Ready!')
+                .setTitle('🎵 MP3 Link Generated!')
+                .setDescription(`**Direct Download Link:**\n${mp3Url}`)
                 .addFields(
-                    { name: '📅 Date', value: date, inline: true },
-                    { name: '🆔 ID', value: id, inline: true },
-                    { name: '✅ Status', value: exists ? 'Verified' : 'Not Verified', inline: true },
-                    { name: '🔗 Download Link', value: `[Click here to download](${mp3Url})` }
+                    { name: '📅 Date', value: `\`${date}\``, inline: true },
+                    { name: '📦 File Size', value: `\`${fileSize}\``, inline: true },
+                    { name: '✅ Status', value: exists ? '`✓ Verified`' : '`⚠ Not Verified`', inline: true },
+                    { name: '🆔 Song ID', value: `\`${id}\`` },
+                    { name: '🔗 Download', value: `[Click here to download MP3](${mp3Url})` }
                 )
-                .setFooter({ text: 'Click the link above to download the MP3 file' })
+                .setFooter({ text: 'Click the link above to download • Made with ❤️' })
                 .setTimestamp();
 
-            await processingMsg.edit({
-                content: `**MP3 Link:**\n${mp3Url}`,
-                embeds: [embed]
-            });
+            if (!exists) {
+                embed.addFields({
+                    name: '⚠️ Warning',
+                    value: 'File verification failed. The link might still work, but please check manually.'
+                });
+            }
+
+            await interaction.editReply({ embeds: [embed] });
 
         } catch (error) {
             console.error('Error:', error);
-            await processingMsg.edit(`❌ Error: ${error.message}`);
+            
+            const errorEmbed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('❌ Error')
+                .setDescription(error.message)
+                .addFields({
+                    name: '💡 Tips',
+                    value: '• Make sure the URL is correct\n• Check if the page exists\n• Try again in a few moments'
+                })
+                .setTimestamp();
+
+            await interaction.editReply({ embeds: [errorEmbed] });
         }
     }
 
-    // Command help
-    if (message.content === `${PREFIX}help`) {
+    // Command: /help
+    if (commandName === 'help') {
         const helpEmbed = new EmbedBuilder()
             .setColor('#0099ff')
             .setTitle('🎵 Lyrics to Song Bot - Help')
-            .setDescription('Get MP3 download links from lyricsintosong.com')
+            .setDescription('Get MP3 download links from lyricsintosong.com easily!')
             .addFields(
                 {
                     name: '📖 How to use',
-                    value: 'Just paste a link from lyricsintosong.com and I\'ll give you the MP3 download link!'
+                    value: 'Use the `/lsong` command with a lyricsintosong.com URL to get the MP3 download link.'
                 },
                 {
                     name: '💡 Example',
-                    value: '```https://lyricsintosong.com/play/fd222b54-f99b-4c57-b5fe-e48540ffc2b7```'
+                    value: '```/lsong url:https://lyricsintosong.com/play/fd222b54-f99b-4c57-b5fe-e48540ffc2b7```'
                 },
                 {
-                    name: '🛠️ Commands',
-                    value: `\`${PREFIX}help\` - Show this message\n\`${PREFIX}ping\` - Check bot status`
+                    name: '🛠️ Available Commands',
+                    value: '`/lsong` - Get MP3 download link\n`/help` - Show this help message\n`/ping` - Check bot status'
+                },
+                {
+                    name: '✨ Features',
+                    value: '• Fast link generation\n• File verification\n• File size information\n• Beautiful embed display'
                 }
             )
             .setFooter({ text: 'Made with ❤️' })
             .setTimestamp();
 
-        message.reply({ embeds: [helpEmbed] });
+        await interaction.reply({ embeds: [helpEmbed], ephemeral: true });
     }
 
-    // Command ping
-    if (message.content === `${PREFIX}ping`) {
-        const sent = await message.reply('🏓 Pinging...');
-        const latency = sent.createdTimestamp - message.createdTimestamp;
+    // Command: /ping
+    if (commandName === 'ping') {
+        const sent = await interaction.deferReply({ fetchReply: true });
+        const latency = sent.createdTimestamp - interaction.createdTimestamp;
         
         const pingEmbed = new EmbedBuilder()
             .setColor('#00ff00')
             .setTitle('🏓 Pong!')
             .addFields(
-                { name: '⚡ Bot Latency', value: `${latency}ms`, inline: true },
-                { name: '📡 API Latency', value: `${Math.round(client.ws.ping)}ms`, inline: true }
+                { name: '⚡ Bot Latency', value: `\`${latency}ms\``, inline: true },
+                { name: '📡 API Latency', value: `\`${Math.round(client.ws.ping)}ms\``, inline: true },
+                { name: '🟢 Status', value: '`Online`', inline: true }
             )
             .setTimestamp();
 
-        sent.edit({ content: null, embeds: [pingEmbed] });
+        await interaction.editReply({ embeds: [pingEmbed] });
     }
 });
 
@@ -188,4 +282,7 @@ if (!TOKEN) {
     process.exit(1);
 }
 
-client.login(TOKEN);
+client.login(TOKEN).catch(error => {
+    console.error('❌ Failed to login:', error);
+    process.exit(1);
+});
